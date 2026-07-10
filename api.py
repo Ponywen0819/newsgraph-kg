@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import threading
+import traceback
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -92,43 +93,88 @@ async def _aclose_graphiti(g):
 
 async def _adrain(graphiti):
     """在單一事件圈內序列排空佇列（一篇一篇灌，共用同一個 Graphiti 實例）。
+    回傳 (processed, failed, attempted, webhook)。
+
     _draining=False 必須在「觀察到佇列空」的同一次持鎖中設定並跳出，否則會與 _enqueue
-    的『是否要另起 drainer』判斷產生漏喚醒。"""
+    的『是否要另起 drainer』判斷產生漏喚醒——這是正常路徑的交接點，勿刪。
+
+    不漏資料（Bug 2）：持鎖時只 peek 佇列前端（不移除、不寫檔）；等 ingest 回來之後才
+    再持鎖 pop(0) 移除。若容器在 ingest 途中被殺，該篇仍留在 queue.json，下次重跑靠
+    ingest.py 既有的 seen.txt 去重達成 at-least-once（重跑已 seen 的會被跳過）。
+    正確性：全程只有這唯一一個 drainer 會從佇列「前端」移除，而 _enqueue 只會 append 到
+    尾端，所以 ingest 後重讀佇列、pop(0) 移除的必然仍是剛處理的那一篇。
+    毒丸處理：ingest_run 明確拋 Exception（單篇 DeepSeek 出包等）視為失敗跳過，仍要把該篇
+    移除（否則壞掉那篇會永遠卡在前端擋住後面全部）；只有崩潰（BaseException／程序被殺）
+    才會跳過移除、把該篇留著重試。"""
     global _draining
-    processed, webhook = 0, None
+    processed, failed, attempted, webhook = 0, 0, 0, None
     while True:
         with _lock:                       # 區塊內無 await → 對事件圈與其他執行緒都是原子的
             q = _read_queue()
             webhook = q.get("done_webhook")
             if not q["items"]:
-                _draining = False
+                _draining = False         # 交接點：觀察到空的當下就交回旗標，防 lost-wakeup
                 break
-            article = q["items"].pop(0)
-            _write_queue(q)
+            article = q["items"][0]        # 只 peek，不移除也不寫檔（崩潰前不丟資料）
+        attempted += 1
         title = (article.get("title") or "")[:50]
         try:
             await ingest_run(graphiti, [article], close=False)   # 一次一篇，不關實例
             processed += 1
             print(f"[drain] 灌完第 {processed} 篇：{title}", flush=True)
-        except Exception as e:
+        except Exception as e:            # 只吞 Exception：明確失敗＝毒丸→仍移除；BaseException（崩潰）會往外拋、跳過下面移除
+            failed += 1
             print(f"[drain] 失敗跳過：{title}：{str(e)[:160]}", flush=True)
-    return processed, webhook
+        with _lock:                       # ingest 回來後（成功 or 明確失敗）才把該篇移除
+            q = _read_queue()
+            if q["items"]:
+                q["items"].pop(0)          # 前端唯一移除者是本 drainer，故仍是剛處理那篇
+                _write_queue(q)
+    return processed, failed, attempted, webhook
 
 
 def _drain_loop():
     """背景執行緒：整個排空過程共用一個事件圈與一個 Graphiti 實例，
-    排空後（若有處理過）打 done_webhook。"""
-    async def _main():
-        graphiti = build_graphiti()
-        try:
-            return await _adrain(graphiti)
-        finally:
-            await _aclose_graphiti(graphiti)
+    排空後（只要這一輪有嘗試過任何篇）打 done_webhook。
 
-    processed, webhook = asyncio.run(_main())
-    print(f"[drain] 佇列排空，共處理 {processed} 篇", flush=True)
-    if processed and webhook:
-        _post_webhook(webhook, {"processed": processed})
+    健壯性（Bug 1）：整段包在 try/except/finally 裡。若 drainer 中途死亡（例如 push 到來時
+    FalkorDB 剛好連不上 → build_graphiti() 拋例外 → asyncio.run 拋出），不可讓執行緒靜默
+    崩潰，也不可讓 _draining 永遠卡在 True——否則之後每次 push 都判定『已有 drainer』而不再
+    啟動 → queue.json 無限累積、每日管線無聲死亡。finally 兜底把 _draining 設回 False，保證
+    未來的 push 能重啟 drainer；殘留的佇列項目留在 queue.json，下次 push 進來時自然被新
+    drainer 接手（不在此處緊迴圈重試，以免 build_graphiti 永遠失敗時變成瘋狂 crash-loop）。"""
+    global _draining
+    result = None
+    handed_off = False
+    try:
+        async def _main():
+            nonlocal handed_off
+            graphiti = build_graphiti()
+            try:
+                r = await _adrain(graphiti)
+                handed_off = True   # _adrain 正常返回 → 已在持鎖觀察空佇列時把 _draining 交接掉
+                return r
+            finally:
+                await _aclose_graphiti(graphiti)
+        result = asyncio.run(_main())
+    except BaseException as e:       # 大聲記錄異常結束，不要讓執行緒靜默崩潰
+        print(f"[drain] drainer 異常結束（將由下次 push 重啟）：{e}", flush=True)
+        traceback.print_exc()
+    finally:
+        # 兜底安全網：只在「未正常交接」（即崩潰）時重置，避免與已接手的後繼 drainer 搶旗標。
+        # 正常路徑下 _adrain 已在交接點把 _draining 設為 False，handed_off=True，此處為 no-op。
+        if not handed_off:
+            with _lock:
+                _draining = False
+
+    if result:
+        processed, failed, attempted, webhook = result
+        print(f"[drain] 佇列排空，共嘗試 {attempted} 篇（成功 {processed}、失敗 {failed}）", flush=True)
+        # Bug 3：只要有取出嘗試過（attempted>0）就通知，即使整批全部灌圖失敗（processed==0）；
+        # 否則下游 News Briefing 會被靜默跳過，即使時間窗內其實還有可報內容。佇列本來就空、
+        # 沒取出任何東西（attempted==0）時才不打。
+        if attempted and webhook:
+            _post_webhook(webhook, {"processed": processed, "failed": failed, "attempted": attempted})
 
 
 def _enqueue(items, done_webhook):
