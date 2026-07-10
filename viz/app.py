@@ -102,9 +102,11 @@ def graph(
 
     # 用 reference_time（新聞觀測日）當時間軸：只顯示「到 as_of 為止、從新聞學到」的事實，
     # 於是拖滑桿＝看圖隨每天新聞累積長大。valid_at（事件日）另外回傳供詳情顯示。
+    # 加上 ORDER BY：截斷（超過 limit）時，優先保留「最近學到」的邊，避免每次回傳不確定的任意子集
     rows = _rows(
         "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
-        "RETURN a.name, b.name, r.fact, r.valid_at, r.reference_time"
+        "RETURN a.name, b.name, r.fact, r.valid_at, r.reference_time "
+        "ORDER BY r.reference_time DESC"
     )
 
     nodes, edges, deg = {}, [], {}

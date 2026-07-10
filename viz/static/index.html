@@ -96,12 +96,14 @@ async function load() {
   cy.elements().remove();
   cy.add(d.elements.nodes);
   cy.add(d.elements.edges);
-  // 保留既有節點座標，減少跳動
+  // 把重載前記錄的既有節點座標套回去，減少跳動；只有完全沒有既有座標（首次載入）才隨機化佈局
+  if (pos) cy.nodes().forEach(n => { if (pos[n.id()]) n.position(pos[n.id()]); });
   cy.layout({ name:'cose', animate:false, nodeRepulsion:9000, idealEdgeLength:90,
-              randomize: !pos, fit:true, padding:40 }).run();
+              randomize: !pos || Object.keys(pos).length === 0, fit:true, padding:40 }).run();
 }
 
-const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// 同時跳脫文字節點與 HTML 屬性情境會用到的字元（含引號），避免任意來源新聞內容含 " 或 ' 提前閉合屬性造成儲存型 XSS
+const esc = s => (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const openDetail = () => { $('#detail').style.display = 'block'; };
 
 async function showNode(name) {
@@ -120,7 +122,7 @@ async function showNode(name) {
   try {
     const d = await (await fetch('/api/entity_episodes?name=' + encodeURIComponent(name))).json();
     const list = (d.items||[]).map(ep =>
-      `<div class="src" data-uuid="${ep.uuid}">📰 ${esc(ep.name)}<br><small>${ep.valid_at||''}　${esc(ep.source)}</small></div>`).join('')
+      `<div class="src" data-uuid="${esc(ep.uuid)}">📰 ${esc(ep.name)}<br><small>${ep.valid_at||''}　${esc(ep.source)}</small></div>`).join('')
       || '<div class="fact">（無）</div>';
     $('#d-body').innerHTML = html.replace('來源新聞（載入中…）', `來源新聞（${d.count}）`) + list;
     bindEpisodeClicks();
@@ -137,7 +139,7 @@ async function showNewsList() {
   const d = await (await fetch('/api/episodes?limit=300' + (kw?('&q='+encodeURIComponent(kw)):''))).json();
   $('#d-title').textContent = `📰 新聞清單（${d.count}）`;
   $('#d-body').innerHTML = (d.items||[]).map(ep =>
-    `<div class="ep" data-uuid="${ep.uuid}">${esc(ep.name)}<br><small>${ep.valid_at||''}　${esc(ep.source)}</small></div>`).join('')
+    `<div class="ep" data-uuid="${esc(ep.uuid)}">${esc(ep.name)}<br><small>${ep.valid_at||''}　${esc(ep.source)}</small></div>`).join('')
     || '<div class="fact">（無新聞）</div>';
   openDetail();
   bindEpisodeClicks();
