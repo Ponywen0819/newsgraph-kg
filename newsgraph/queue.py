@@ -97,21 +97,13 @@ async def _aclose_graphiti(g):
     排 aclose(),噴一堆 'Event loop is closed' traceback(無害但很吵)。
     另外 FalkorDriver 會「自動背景建索引」——那個 fire-and-forget task 若在關連線後才
     收尾,會噴 'Task exception was never retrieved'(Connection closed by server)。
-    因此關 driver 前先把還在跑的背景 task 等完並取回其例外。
+    (在共享的 uvicorn loop 下不再掃 asyncio.all_tasks()——見下方說明。)
 
-    註:原本在 api.py 是跑在 asyncio.run() 專屬的獨立事件圈裡,all_tasks() 只含 graphiti
-    的背景 task;移到統一 app 後由 lifespan 於 uvicorn 主 loop 呼叫,此時 current_task 是
-    lifespan/serve task(已被過濾),supervisor task 也已在呼叫前被取消並 await 收回,故
-    all_tasks() 實務上仍只剩 graphiti driver 的收尾 task。"""
-    try:
-        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        if pending:
-            await asyncio.wait(pending, timeout=30)
-            for t in pending:              # 取回例外 → 消除 "never retrieved" 警告
-                if t.done() and not t.cancelled():
-                    t.exception()
-    except Exception:
-        pass
+    註:api.py 舊版跑在 asyncio.run() 專屬 loop,all_tasks() 只含 graphiti 的背景 task,
+    故可安全等它收尾。移到統一 app 後改由 lifespan/supervisor 於 uvicorn 共享 loop 呼叫,
+    all_tasks() 會混入 uvicorn 自身的長駐 task,asyncio.wait(timeout=30) 會空等到逾時、
+    拖慢每次 shutdown/重建。而 FalkorDriver 的自動建索引 task 在長駐服務啟動時早已完成,
+    此處不需再等,故直接關閉 driver 與 client。"""
     try:
         await g.close()   # 關圖 driver
     except Exception:
