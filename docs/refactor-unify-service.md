@@ -63,10 +63,13 @@ newsgraph-kg/
 
 | 階段 | 內容 | 風險 | 狀態 |
 |---|---|---|---|
-| **P1** | 套件骨架、搬模組進 `newsgraph/`、抽 `graphrepo.py`、`config.py`、delta 與 viz 讀取改走 graphrepo、run.sh 改 `-m` | 低(純重構) | 🏃 進行中 |
-| **P2** | 新 FastAPI `web/app.py`(併 viz 路由 + 移植 api 端點)、drainer→lifespan async worker、寫入路由加 API-Key、單一埠 | **高** | ⏳ 待辦 |
-| **P3** | 單一 Containerfile(COPY)、`deploy/newsgraph.container`、退役 viz 映像與兩舊單元 | 中 | ⏳ 待辦 |
-| **P5** | 移植 PR#4 佇列測試、容器 smoke test、切換 n8n 8090→8080 與 ssh 8088→8080、flip Quadlet | 中 | ⏳ 待辦 |
+| **P1** | 套件骨架、搬模組進 `newsgraph/`、抽 `graphrepo.py`、`config.py`、delta 與 viz 讀取改走 graphrepo、run.sh 改 `-m` | 低(純重構) | ✅ 完成(commit `c7645bd`) |
+| **P2** | 新 FastAPI `web/app.py`(併 viz 路由 + 移植 api 端點)、drainer→lifespan async worker、寫入路由加 API-Key、單一埠 | **高** | ✅ 完成(`a467169`+修復 `bea002a`) |
+| **P3** | 單一 Containerfile(COPY)、`deploy/newsgraph.container`、退役 viz 映像與兩舊單元 | 中 | ✅ 完成(`8ef7ea8`);兩舊 Quadlet 於 P5 停用 |
+| **P5** | 容器 smoke test(canary 起 :8080 不動舊服務)、切換 n8n 8090→8080 與 ssh 8088→8080、停舊單元 flip Quadlet | 中 | ⏳ 待辦(需 build image + FalkorDB + 使用者確認) |
+
+**P2 複核修正**:`_aclose_graphiti` 原在 `asyncio.run` 專屬 loop 掃 `all_tasks()`;移到共享 uvicorn loop 後會空等 uvicorn 自身 task 到 30s 逾時,已移除該掃描(`bea002a`)。
+**P5 待驗地雷**:`supervisor` 於 uvicorn loop 內呼叫 `build_graphiti()`,FalkorDriver 會自動排背景建索引 task(與舊 api.py 同,非回歸),smoke test 要確認首次 ingest 不噴「Connection closed」。
 
 > 本分支在全部階段完成、容器 smoke test 通過前**不 merge 進 main**,避免半遷移狀態影響每日 07:00 生產管線。
 
