@@ -2,7 +2,8 @@
 
     python delta.py [--hours N]   → stdout 印 JSON：{hours, new_facts:[...], superseded:[...]}
 
-與 reporter.py 的 collect_delta 同邏輯，但只回原始事實、不呼叫 LLM。
+分類邏輯（new_facts / superseded 怎麼判定）與 reporter.py 的 collect_delta
+共用同一份實作，見 delta_core.classify_delta；本檔只回原始事實、不呼叫 LLM。
 只需 falkordb client（不需 Graphiti），故 api.py 可直接 import compute_delta()。
 """
 import json
@@ -12,15 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from falkordb import FalkorDB
 
-
-def _parse_ts(v):
-    if v is None or v == "":
-        return None
-    try:
-        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+from delta_core import classify_delta
 
 
 def compute_delta(hours: int = 12) -> dict:
@@ -34,18 +27,16 @@ def compute_delta(hours: int = 12) -> dict:
         "MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity) "
         "RETURN a.name, b.name, r.fact, r.created_at, r.expired_at, r.valid_at, r.invalid_at"
     )
-    new_facts, superseded = [], []
-    for row in (res.result_set or []):
-        a_name, b_name, fact, created, expired, valid, invalid = row
-        if not fact:
-            continue
-        rec = {"src": a_name, "dst": b_name, "fact": fact,
-               "valid_at": str(valid or "")[:10], "invalid_at": str(invalid or "")[:10]}
-        c, e = _parse_ts(created), _parse_ts(expired)
-        if e and e >= cutoff:
-            superseded.append(rec)
-        elif c and c >= cutoff:
-            new_facts.append(rec)
+    # falkordb client 回傳的是 positional row，先轉成 dict 給共用的 classify_delta 用。
+    rows = [
+        {
+            "src": a_name, "dst": b_name, "fact": fact,
+            "created_at": created, "expired_at": expired,
+            "valid_at": valid, "invalid_at": invalid,
+        }
+        for a_name, b_name, fact, created, expired, valid, invalid in (res.result_set or [])
+    ]
+    new_facts, superseded = classify_delta(rows, cutoff)
     return {"hours": hours, "new_facts": new_facts, "superseded": superseded}
 
 

@@ -15,24 +15,15 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from graph import build_graphiti, GROUP_ID
-
-
-def _parse_ts(v):
-    """把各種時間表示（datetime / ISO 字串 / None）轉成 aware datetime，失敗回 None。"""
-    if v is None or v == "":
-        return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
-    s = str(v).replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+from delta_core import classify_delta
 
 
 async def collect_delta(graphiti, hours: int):
-    """回傳 (new_facts, superseded_facts)。每筆含 fact / 兩端實體 / valid_at。"""
+    """回傳 (new_facts, superseded_facts)。每筆含 fact / 兩端實體 / valid_at。
+
+    分類規則（created_at 落在視窗內 → 新增；expired_at 落在視窗內 → 被推翻）
+    與 delta.py 的 compute_delta 共用同一份實作，見 delta_core.classify_delta。
+    """
     d = graphiti.driver
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     res = await d.execute_query(
@@ -42,23 +33,7 @@ async def collect_delta(graphiti, hours: int):
         "r.valid_at AS valid_at, r.invalid_at AS invalid_at"
     )
     rows = res[0] if isinstance(res, tuple) else res
-    new_facts, superseded = [], []
-    for r in rows:
-        fact = r.get("fact")
-        if not fact:
-            continue
-        rec = {
-            "src": r.get("src"), "dst": r.get("dst"), "fact": fact,
-            "valid_at": str(r.get("valid_at") or "")[:10],
-            "invalid_at": str(r.get("invalid_at") or "")[:10],
-        }
-        created = _parse_ts(r.get("created_at"))
-        expired = _parse_ts(r.get("expired_at"))
-        if expired and expired >= cutoff:
-            superseded.append(rec)
-        elif created and created >= cutoff:
-            new_facts.append(rec)
-    return new_facts, superseded
+    return classify_delta(rows, cutoff)
 
 
 def build_prompt(new_facts, superseded, hours):
