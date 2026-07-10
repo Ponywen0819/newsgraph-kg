@@ -15,19 +15,23 @@ Graphiti 在灌圖時已完成去重,因此:
 - `created_at` 落在時間窗內的邊 = 真正的新資訊
 - `expired_at` 落在時間窗內的邊 = 被新事實推翻的舊事實
 
-## 檔案結構
+## 架構
 
-| 檔案 | 用途 |
+**單一 FastAPI 服務**(埠 8080):寫入 API(需 `X-API-Key`)+ 唯讀視覺化(公開)共用同一 app;灌圖由 lifespan 內的常駐 async worker 序列處理。整個專案是一個 Python 套件 `newsgraph/`。
+
+| 路徑 | 用途 |
 |---|---|
-| `graph.py` | 建立設定好的 Graphiti 實例(DeepSeek + NVIDIA embedder + FalkorDB) |
-| `ingest.py` | 把一批新聞 JSON 灌進圖譜(含繁中語言正規化) |
-| `reporter.py` | 讀圖譜 delta,用 LLM 寫差異化簡報 |
-| `delta.py` | 只回傳原始 delta 事實(不呼叫 LLM),供外部服務取用 |
-| `api.py` | 薄 HTTP API:佇列式序列灌圖 + `/delta`(給自動化流程呼叫) |
-| `query.py` / `diag.py` / `dump.py` | 語意查詢 / 品質診斷 / 備份還原 |
-| `nvidia_embedder.py` | NVIDIA NIM 的自訂 embedder |
-| `deepseek_client.py` | DeepSeek 的 LLM client(處理其 json_object 回傳的攤平) |
-| `viz/` | 唯讀圖譜視覺化服務(FastAPI + Cytoscape.js) |
+| `newsgraph/graph.py` | 建立設定好的 Graphiti 實例(DeepSeek + NVIDIA embedder + FalkorDB) |
+| `newsgraph/ingest.py` | 把一批新聞 JSON 灌進圖譜(含繁中語言正規化) |
+| `newsgraph/reporter.py` | 讀圖譜 delta,用 LLM 寫差異化簡報 |
+| `newsgraph/delta.py` · `delta_core.py` | 回傳原始 delta 事實(不呼叫 LLM);分類核心零依賴、可單測 |
+| `newsgraph/graphrepo.py` | 統一唯讀圖存取層(falkordb 直查,viz 與 delta 共用) |
+| `newsgraph/config.py` | 集中環境變數設定 |
+| `newsgraph/queue.py` | 持久佇列 + lifespan 常駐 async worker(序列灌圖、崩潰不遺失) |
+| `newsgraph/web/` | 統一 FastAPI app(`app.py` + `routes_ingest.py` 寫入 + `routes_view.py` 視覺化 + `static/`) |
+| `newsgraph/clients/` | DeepSeek client / NVIDIA embedder |
+| `newsgraph/query.py` · `diag.py` · `dump.py` | 語意查詢 / 品質診斷 / 備份還原(`python -m newsgraph.<模組>`) |
+| `deploy/newsgraph.container` | podman Quadlet 部署單元 |
 
 ## 快速開始
 
@@ -39,16 +43,19 @@ cp .env.example .env      # 填入 DEEPSEEK_API_KEY、NVIDIA_API_KEY、NEWSGRAPH
 podman run -d --name falkordb -p 127.0.0.1:6379:6379 \
   -v falkordb-data:/var/lib/falkordb/data falkordb/falkordb:latest
 
-# 3) 建 image
+# 3) 建 image(單一映像)
 podman build -t localhost/newsgraph:latest .
 
-# 4) 灌一批範例新聞
+# 4) 啟動統一服務(寫入 API + 視覺化,單一埠 8080)
+cp deploy/newsgraph.container ~/.config/containers/systemd/
+systemctl --user daemon-reload && systemctl --user start newsgraph
+#   → 視覺化:http://<host>:8080/　寫入 API:POST http://<host>:8080/queue/push(需 X-API-Key)
+
+# 5) 灌一批範例新聞(CLI)
 cat sample_news.json | ./run.sh ingest -
 
-# 5) 產出差異化簡報
+# 6) 產出差異化簡報 / 查詢(CLI)
 ./run.sh reporter --hours 24
-
-# 6) 查詢
 ./run.sh query search "台積電 最近的動向"
 ./run.sh query stats
 ```
