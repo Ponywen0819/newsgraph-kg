@@ -25,7 +25,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from graphiti_core.nodes import EpisodeType
-from graph import build_graphiti, GROUP_ID
+from .graph import build_graphiti, GROUP_ID
 
 TZ = ZoneInfo("Asia/Taipei")
 # 已處理過的新聞 id（避免重複 ingest）；放在掛載的 state volume

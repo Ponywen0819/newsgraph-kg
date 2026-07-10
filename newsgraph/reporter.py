@@ -14,8 +14,8 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-from graph import build_graphiti, GROUP_ID
-from delta_core import classify_delta
+from .graph import build_graphiti, GROUP_ID
+from .delta_core import classify_delta
 
 
 async def collect_delta(graphiti, hours: int):

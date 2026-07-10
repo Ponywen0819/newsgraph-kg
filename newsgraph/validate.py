@@ -1,6 +1,6 @@
 """接線驗證：在 event loop 外建構 Graphiti（避免 driver 自動背景建索引造成並發衝突）。"""
 import asyncio
-from graph import build_graphiti
+from .graph import build_graphiti
 
 async def run(g):
     await g.build_indices_and_constraints()

@@ -1,6 +1,6 @@
 """把圖裡的 Episodic 還原成 ingest 用的 articles JSON，寫進 state volume 備份。"""
 import asyncio, json
-from graph import build_graphiti
+from .graph import build_graphiti
 
 async def run(g):
     d = g.driver

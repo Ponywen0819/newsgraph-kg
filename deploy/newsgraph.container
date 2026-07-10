@@ -1,0 +1,32 @@
+# NewsGraph 統一服務(寫入 API + 唯讀視覺化,單一埠 8080)。
+# 取代舊的 newsgraph-api.container(:8090)與 newsgraph-viz.container(:8088)。
+#
+# 部署:
+#   cp deploy/newsgraph.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload && systemctl --user start newsgraph
+# 切換時記得停用兩個舊單元(見 docs/refactor-unify-service.md 第 8 節)。
+[Unit]
+Description=NewsGraph unified service (ingest API + read-only viz)
+After=network-online.target falkordb.service
+Wants=falkordb.service
+
+[Container]
+ContainerName=newsgraph
+Image=localhost/newsgraph:latest
+# host 網路:直連 FalkorDB 127.0.0.1:6379;uvicorn 綁 0.0.0.0:8080 讓 n8n/LAN 連得到
+Network=host
+EnvironmentFile=/home/user/newsgraph/.env
+Environment=FALKOR_HOST=127.0.0.1
+Environment=NEWSGRAPH_PORT=8080
+# 佇列(queue.json)與去重(seen.txt)狀態;與 CLI ingest 共用同一 volume
+Volume=newsgraph-state:/app/state
+# 程式碼已 COPY 進映像 → 不 mount 原始碼。ENTRYPOINT 為 python,故 Exec 以 -m 起 uvicorn。
+Exec=-m uvicorn newsgraph.web.app:app --host 0.0.0.0 --port 8080
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
