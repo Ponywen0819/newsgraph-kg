@@ -10,8 +10,8 @@ from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 
-from nvidia_embedder import NvidiaEmbedder
-from deepseek_client import DeepSeekClient
+from .clients.nvidia_embedder import NvidiaEmbedder
+from .clients.deepseek import DeepSeekClient
 
 # 整個圖的命名空間；之後要分多個圖（如不同主題）可改這裡
 GROUP_ID = os.getenv("NEWS_GROUP_ID", "news")

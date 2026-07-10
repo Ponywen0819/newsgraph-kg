@@ -3,7 +3,7 @@ import asyncio
 import sys
 from collections import defaultdict
 
-from graph import build_graphiti, GROUP_ID
+from .graph import build_graphiti, GROUP_ID
 
 
 async def q(driver, cypher):

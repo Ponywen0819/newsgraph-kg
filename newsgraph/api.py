@@ -21,9 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from ingest import run as ingest_run
-from graph import build_graphiti
-from delta import compute_delta
+from .ingest import run as ingest_run
+from .graph import build_graphiti
+from .delta import compute_delta
 
 API_KEY = os.environ.get("NEWSGRAPH_API_KEY", "")
 PORT = int(os.getenv("NEWSGRAPH_API_PORT", "8090"))

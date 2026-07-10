@@ -6,7 +6,7 @@
 import asyncio
 import sys
 
-from graph import build_graphiti, GROUP_ID
+from .graph import build_graphiti, GROUP_ID
 
 
 async def do_search(graphiti, query: str) -> None:
