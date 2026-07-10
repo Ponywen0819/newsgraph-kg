@@ -36,7 +36,7 @@ SEEN_FILE = Path("/app/state/seen.txt")
 #   - 中文為主的文字 → 只過 OpenCC s2twp（即時、免費、確定性；簡→台灣繁，含詞彙如 网络→網路）
 #   - 非中文為主（英文/日文等，中文<門檻） → 先用 LLM 翻成繁中（嚴格保留專有名詞/數字/事實），再過 OpenCC 保證繁體
 # 開關：NORMALIZE_LLM=0 → 只用 OpenCC；OPENCC_CONFIG 可覆寫（如 s2t 只轉字不轉詞）；
-#       NORMALIZE_CJK_RATIO 可調「視為需翻譯」的中文佔比門檻（預設 0.30）。
+#       NORMALIZE_CJK_RATIO 可調「視為需翻譯」的中文佔比門檻（預設 0.20）。
 try:
     from opencc import OpenCC
 
@@ -155,7 +155,11 @@ def mark_seen(ids: list[str]) -> None:
 
 async def run(graphiti, articles: list[dict], close: bool = True) -> None:
     seen = load_seen()
-    await graphiti.build_indices_and_constraints()  # 冪等，安全重複呼叫
+    # 索引/約束只需在此 graphiti 實例上建一次；api.py 的 drainer 會共用同一實例逐篇呼叫 run()，
+    # 用旗標掛在實例上避免每篇都多打一輪 build_indices_and_constraints round-trip。
+    if not getattr(graphiti, "_ng_indices_built", False):
+        await graphiti.build_indices_and_constraints()  # 冪等，安全重複呼叫
+        graphiti._ng_indices_built = True
 
     done: list[str] = []
     try:
@@ -168,6 +172,9 @@ async def run(graphiti, articles: list[dict], close: bool = True) -> None:
             if not title:
                 print(f"[{idx}/{len(articles)}] skip（無標題）")
                 continue
+            # 確定要處理這篇了：立刻標記為 seen，避免同一批 payload 內出現重複 id 時被重複灌入
+            # （跨批的去重靠 SEEN_FILE 持久化，失敗重試靠 done 只在成功後才寫入 mark_seen，不受此影響）
+            seen.add(aid)
             try:
                 body = normalize_zh((a.get("body") or "").strip())
                 episode_body = f"{title}\n\n{body}".strip()
