@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>新聞知識圖譜</title>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#1a1d24; --line:#2a2f3a; --fg:#e6e6e6; --muted:#8b93a7; --accent:#5865F2; --new:#2ECC71; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--fg); }
+  #bar { display:flex; flex-wrap:wrap; gap:14px; align-items:center; padding:10px 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #bar h1 { font-size:15px; margin:0 8px 0 0; font-weight:600; }
+  #bar label { font-size:12px; color:var(--muted); margin-right:4px; }
+  input[type=range]{ width:280px; vertical-align:middle; }
+  input[type=text]{ background:#0c0e12; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:5px 8px; width:160px; }
+  .btn{ background:#232733; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; }
+  .btn:hover{ background:#2c313d; }
+  #detail .ep, #detail .src{ padding:6px 0; border-top:1px solid var(--line); line-height:1.4; cursor:pointer; }
+  #detail .ep:hover, #detail .src:hover{ color:var(--accent); }
+  #detail .content{ white-space:pre-wrap; line-height:1.6; margin:8px 0; }
+  #detail a{ color:var(--accent); }
+  .chip{ display:inline-block; background:#232733; border:1px solid var(--line); border-radius:10px; padding:1px 7px; margin:2px 3px 0 0; font-size:11px; cursor:pointer; }
+  .chip:hover{ background:#2c313d; }
+  .sec{ margin-top:10px; font-size:12px; color:var(--muted); }
+  .back{ color:var(--muted); cursor:pointer; font-size:12px; }
+  #asof { color:var(--accent); font-variant-numeric:tabular-nums; min-width:96px; display:inline-block; }
+  .pill { font-size:12px; color:var(--muted); }
+  #cy { width:100%; height:calc(100vh - 52px); display:block; }
+  #detail { position:absolute; right:12px; top:64px; width:330px; max-height:70vh; overflow:auto;
+            background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:none; font-size:13px; }
+  #detail h2 { margin:0 0 8px; font-size:14px; color:var(--accent); }
+  #detail .fact { padding:6px 0; border-top:1px solid var(--line); line-height:1.4; }
+  #detail .fact small { color:var(--muted); }
+  #close { float:right; cursor:pointer; color:var(--muted); }
+  .legend { font-size:11px; color:var(--muted); }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 8px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <h1>📊 新聞知識圖譜</h1>
+  <span><label>時間點</label><input type="range" id="time" min="0" max="100" value="100"><b id="asof">—</b></span>
+  <span><label>實體</label><input type="text" id="entity" placeholder="關鍵字，如 Nvidia"></span>
+  <button id="newsbtn" class="btn">📰 新聞</button>
+  <span class="pill" id="counts">—</span>
+  <span class="legend"><span class="dot" style="background:var(--new)"></span>近期新增
+    <span class="dot" style="background:#6b7280"></span>既有</span>
+</div>
+<div id="cy"></div>
+<div id="detail"><span id="close">✕</span><h2 id="d-title"></h2><div id="d-body"></div></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let cy, span = null, adjacency = {};
+
+const style = [
+  { selector:'node', style:{
+      'background-color':'#3b4252', 'label':'data(label)', 'color':'#cdd3e0',
+      'font-size':10, 'text-valign':'center', 'text-halign':'center',
+      'text-outline-color':'#0f1115', 'text-outline-width':2,
+      'width':'mapData(degree, 1, 12, 16, 54)', 'height':'mapData(degree, 1, 12, 16, 54)' }},
+  { selector:'node:selected', style:{ 'background-color':'#5865F2', 'border-color':'#fff', 'border-width':2 }},
+  { selector:'edge', style:{
+      'width':1, 'line-color':'#3a4150', 'curve-style':'bezier',
+      'target-arrow-shape':'triangle', 'target-arrow-color':'#3a4150', 'arrow-scale':0.7 }},
+  { selector:'edge[?recent]', style:{ 'line-color':'#2ECC71', 'target-arrow-color':'#2ECC71', 'width':2 }},
+  { selector:'.faded', style:{ 'opacity':0.12 }},
+  { selector:'.hi', style:{ 'opacity':1 }},
+];
+
+function isoAtSlider(v) {
+  if (!span) return null;
+  const lo = new Date(span.min).getTime(), hi = new Date(span.max).getTime();
+  return new Date(lo + (hi - lo) * (v/100)).toISOString();
+}
+
+async function load() {
+  const asof = isoAtSlider($('#time').value);
+  $('#asof').textContent = asof ? asof.slice(0,10) : '—';
+  const q = new URLSearchParams();
+  if (asof) q.set('as_of', asof);
+  const kw = $('#entity').value.trim();
+  if (kw) q.set('entity', kw);
+  const r = await fetch('/api/graph?' + q.toString());
+  const d = await r.json();
+  $('#counts').textContent = `節點 ${d.counts.nodes}・邊 ${d.counts.edges}` + (d.counts.truncated ? '（已截斷）' : '');
+
+  adjacency = {};
+  for (const e of d.elements.edges) {
+    (adjacency[e.data.source] = adjacency[e.data.source] || []).push(e.data);
+    (adjacency[e.data.target] = adjacency[e.data.target] || []).push(e.data);
+  }
+  const pos = cy ? {} : null;
+  if (cy) cy.nodes().forEach(n => pos[n.id()] = n.position());
+  cy.elements().remove();
+  cy.add(d.elements.nodes);
+  cy.add(d.elements.edges);
+  // 保留既有節點座標，減少跳動
+  cy.layout({ name:'cose', animate:false, nodeRepulsion:9000, idealEdgeLength:90,
+              randomize: !pos, fit:true, padding:40 }).run();
+}
+
+const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const openDetail = () => { $('#detail').style.display = 'block'; };
+
+async function showNode(name) {
+  $('#d-title').textContent = name;
+  const facts = (adjacency[name] || []).slice().sort((a,b)=> (b.valid_at||'').localeCompare(a.valid_at||''));
+  let html = `<div class="sec">關聯事實（${facts.length}）</div>`;
+  html += facts.length
+    ? facts.map(f => `<div class="fact">${f.recent?'🆕 ':''}${esc(f.label)||'—'}<br><small>🕑事件 ${f.valid_at||'—'}　📥學於 ${f.learned_at||'—'}　${esc(f.source)}→${esc(f.target)}</small></div>`).join('')
+    : '<div class="fact">（無關聯事實）</div>';
+  html += `<div class="sec">來源新聞（載入中…）</div>`;
+  $('#d-body').innerHTML = html;
+  openDetail();
+  cy.elements().addClass('faded').removeClass('hi');
+  cy.getElementById(name).closedNeighborhood().addClass('hi').removeClass('faded');
+  // 該實體出現在哪些新聞
+  try {
+    const d = await (await fetch('/api/entity_episodes?name=' + encodeURIComponent(name))).json();
+    const list = (d.items||[]).map(ep =>
+      `<div class="src" data-uuid="${ep.uuid}">📰 ${esc(ep.name)}<br><small>${ep.valid_at||''}　${esc(ep.source)}</small></div>`).join('')
+      || '<div class="fact">（無）</div>';
+    $('#d-body').innerHTML = html.replace('來源新聞（載入中…）', `來源新聞（${d.count}）`) + list;
+    bindEpisodeClicks();
+  } catch(e){ /* 忽略 */ }
+}
+
+function bindEpisodeClicks() {
+  document.querySelectorAll('#d-body [data-uuid]').forEach(el =>
+    el.onclick = () => showEpisode(el.getAttribute('data-uuid')));
+}
+
+async function showNewsList() {
+  const kw = $('#entity').value.trim();
+  const d = await (await fetch('/api/episodes?limit=300' + (kw?('&q='+encodeURIComponent(kw)):''))).json();
+  $('#d-title').textContent = `📰 新聞清單（${d.count}）`;
+  $('#d-body').innerHTML = (d.items||[]).map(ep =>
+    `<div class="ep" data-uuid="${ep.uuid}">${esc(ep.name)}<br><small>${ep.valid_at||''}　${esc(ep.source)}</small></div>`).join('')
+    || '<div class="fact">（無新聞）</div>';
+  openDetail();
+  bindEpisodeClicks();
+}
+
+async function showEpisode(uuid) {
+  const ep = await (await fetch('/api/episode/' + encodeURIComponent(uuid))).json();
+  if (ep.error) return;
+  $('#d-title').textContent = ep.name || '新聞';
+  const chips = (ep.mentions||[]).map(m => `<span class="chip" data-focus="${esc(m)}">${esc(m)}</span>`).join('');
+  $('#d-body').innerHTML =
+    `<div class="back" id="backlist">← 新聞清單</div>` +
+    `<div class="content">${esc(ep.content)}</div>` +
+    `<div class="sec">🕑 ${ep.valid_at||''}　${esc(ep.source)}</div>` +
+    (ep.url ? `<div class="sec"><a href="${esc(ep.url)}" target="_blank" rel="noopener">🔗 原始來源</a></div>` : '') +
+    (chips ? `<div class="sec">提到的實體</div><div>${chips}</div>` : '');
+  openDetail();
+  $('#backlist').onclick = showNewsList;
+  document.querySelectorAll('#d-body [data-focus]').forEach(el => el.onclick = () => {
+    const name = el.getAttribute('data-focus');
+    const n = cy.getElementById(name);
+    if (n.nonempty()) { cy.animate({center:{eles:n}, zoom:1.2}, {duration:300}); showNode(name); }
+  });
+}
+
+function init() {
+  cy = cytoscape({ container: $('#cy'), style, wheelSensitivity:0.25 });
+  cy.on('tap', 'node', e => showNode(e.target.id()));
+  cy.on('tap', e => { if (e.target === cy) { $('#detail').style.display='none'; cy.elements().removeClass('faded hi'); }});
+  $('#close').onclick = () => { $('#detail').style.display='none'; cy.elements().removeClass('faded hi'); };
+  $('#newsbtn').onclick = showNewsList;
+  let t; const deb = fn => { clearTimeout(t); t = setTimeout(fn, 250); };
+  $('#time').oninput = () => deb(load);
+  $('#entity').oninput = () => deb(load);
+}
+
+(async function(){
+  init();
+  span = await (await fetch('/api/timespan')).json();
+  await load();
+})();
+</script>
+</body>
+</html>

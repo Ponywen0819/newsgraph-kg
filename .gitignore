@@ -1,0 +1,25 @@
+# === 機密 / 環境變數(絕不上傳)===
+.env
+*.env
+!.env.example
+
+# === 執行期狀態與資料(掛載於 volume,非原始碼)===
+state/
+backup_articles.json
+queue.json
+seen.txt
+*.log
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# === 編輯器 / OS ===
+.DS_Store
+.idea/
+.vscode/
+*.swp
